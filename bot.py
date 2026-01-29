@@ -1,68 +1,132 @@
 import requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
     ContextTypes,
     filters,
     CommandHandler,
+    CallbackQueryHandler,
 )
 
 # =========================
-# DÁN TOKEN BOT CỦA BẠN VÀO ĐÂY
+# CẤU HÌNH
 # =========================
 BOT_TOKEN = "8598067935:AAFqV8DnyN0kKHtcgZeHWCbriObQE8-Yb2I"
+OWNER_ID = 6015869726  # DÁN TELEGRAM ID CỦA BẠN
 
 
-# Lệnh /start
+# =========================
+# KIỂM TRA QUYỀN
+# =========================
+def is_owner(update: Update):
+    return update.effective_user.id == OWNER_ID
+
+
+# =========================
+# /start
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        await update.message.reply_text("⛔ Bot này chỉ dùng cho cá nhân.")
+        return
+
     await update.message.reply_text(
         "👋 Xin chào!\n\n"
-        "📌 Gửi link:\n"
-        "• TikTok\n"
-        "• Douyin (Trung Quốc)\n\n"
-        "👉 Bot sẽ tải video KHÔNG watermark cho bạn."
+        "📌 Gửi link TikTok hoặc Douyin\n"
+        "👇 Chọn chức năng bằng nút bên dưới"
     )
 
 
-# Xử lý link video
+# =========================
+# NHẬN LINK
+# =========================
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    if not is_owner(update):
+        return
 
-    await update.message.reply_text("⏳ Đang xử lý video, vui lòng chờ...")
+    text = update.message.text.strip()
+    context.user_data["last_url"] = text
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🎬 Tải Video", callback_data="video"),
+            InlineKeyboardButton("🎵 Tải Audio", callback_data="audio"),
+        ]
+    ]
+
+    await update.message.reply_text(
+        "👉 Bạn muốn tải gì?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+# =========================
+# XỬ LÝ NÚT BẤM
+# =========================
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_owner(update):
+        return
+
+    url = context.user_data.get("last_url")
+    if not url:
+        await query.message.reply_text("❌ Không tìm thấy link.")
+        return
+
+    await query.message.reply_text("⏳ Đang xử lý, vui lòng chờ...")
 
     try:
-        # ===== TikTok =====
-        if "tiktok.com" in text:
-            api_url = "https://tikwm.com/api/"
-            r = requests.get(api_url, params={"url": text}, timeout=15)
-            data = r.json()
+        # =========================
+        # TIKTOK – API CHÍNH + DỰ PHÒNG
+        # =========================
+        if "tiktok.com" in url:
+            try:
+                # API CHÍNH
+                r = requests.get("https://tikwm.com/api/", params={"url": url}, timeout=10)
+                data = r.json()
+                video_url = data["data"]["play"]
+                audio_url = data["data"]["music"]
+            except:
+                # API DỰ PHÒNG
+                r = requests.get("https://api.tiklydown.me/api/download", params={"url": url}, timeout=10)
+                data = r.json()
+                video_url = data["video"]["noWatermark"]
+                audio_url = data["music"]
 
-            video_url = data["data"]["play"]
-
-        # ===== Douyin (Trung Quốc) =====
-        elif "douyin.com" in text:
-            api_url = "https://www.wetools.com/api/douyin"
-            r = requests.get(api_url, params={"url": text}, timeout=15)
-            data = r.json()
-
-            video_url = data["data"]["video"]["play_addr"]["url_list"][0]
+        # =========================
+        # DOUYIN – API CHÍNH + DỰ PHÒNG
+        # =========================
+        elif "douyin.com" in url:
+            try:
+                # API CHÍNH
+                r = requests.get("https://www.wetools.com/api/douyin", params={"url": url}, timeout=10)
+                data = r.json()
+                video_url = data["data"]["video"]["play_addr"]["url_list"][0]
+                audio_url = data["data"]["video"]["music"]["play_url"]["url_list"][0]
+            except:
+                # API DỰ PHÒNG
+                r = requests.get("https://api.douyin.wtf/api", params={"url": url}, timeout=10)
+                data = r.json()
+                video_url = data["video"]
+                audio_url = data["music"]
 
         else:
-            await update.message.reply_text(
-                "❌ Link không hợp lệ.\n"
-                "👉 Chỉ hỗ trợ TikTok và Douyin."
-            )
+            await query.message.reply_text("❌ Chỉ hỗ trợ TikTok & Douyin.")
             return
 
-        # Gửi video về Telegram
-        await update.message.reply_video(video=video_url)
+        # =========================
+        # GỬI KẾT QUẢ
+        # =========================
+        if query.data == "video":
+            await query.message.reply_video(video=video_url)
+        else:
+            await query.message.reply_audio(audio=audio_url)
 
     except Exception as e:
-        await update.message.reply_text(
-            "⚠️ Không tải được video.\n"
-            "👉 Có thể link lỗi hoặc API tạm thời không hoạt động."
-        )
+        await query.message.reply_text("⚠️ Lỗi khi tải. Tất cả API đều không phản hồi.")
 
 
 # =========================
@@ -72,6 +136,7 @@ app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+app.add_handler(CallbackQueryHandler(handle_button))
 
 print("🤖 Bot đang chạy...")
 app.run_polling()
